@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Sketch</title>
+
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+
+      canvas {
+        display: block;
+      }
+
+      .hide {
+        display: none;
+      }
+    </style>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js" integrity="sha512-bcfltY+lNLlNxz38yBBm/HLaUB1gTV6I0e+fahbF9pS6roIdzUytozWdnFV8ZnM6cSAG5EbmO0ag0a/fLZSG4Q==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js" type="text/javascript"></script>
+  </head>
+  <body >
+    <script>
+let video, classifier, faceapi, inputLabel
+let boxes= [];
+let trained = false
+const imgSize = 64
+
+let vidW;
+let vidH;
+parts = {};
+
+let skinColor;
+
+let hairColor;
+let hairChanged = false;
+let defaultHairColor;
+let hairWeights
+let hairMax
+
+let eyeColor;
+let eyeChanged = false;
+let defaultEyeColor;
+let eyeWeights
+let eyeMax
+
+let lipColor;
+let lipChanged = false;
+let defaultLipColor;
+let lipWeights
+let lipMax
+
+let mouthColor;
+let detectColor = true;
+
+let faceHeight;
+
+let score;
+
+let detectingDisplay;
+
+let sources;
+let sourcesToggle;
+
+function hexToRGB(hex) {
+  let r = parseInt(hex.slice(1, 3), 16);
+  let g = parseInt(hex.slice(3, 5), 16);
+  let b = parseInt(hex.slice(5, 7), 16);
+  return [r, g, b]
+}
+
+function setup() {
+  hairWeights = [random(1), random(1), random(1)];
+  hairMax = 255 * (hairWeights[0] + hairWeights[1] + hairWeights[2])
+
+  eyeWeights = [random(1), random(1), random(1)];
+  eyeMax = 255 * (eyeWeights[0] + eyeWeights[1] + eyeWeights[2])
+
+  lipWeights = [random(1), random(1), random(1)];
+  lipMax = 255 * (lipWeights[0] + lipWeights[1] + lipWeights[2])
+
+  createCanvas(innerWidth, innerHeight)
+  document.getElementById("defaultCanvas0").setAttribute('willReadFrequently', true)
+
+  initVideo()
+  initFaceDetector()
+  initFaceClassifier()
+
+  document.getElementById('setHairColor').addEventListener('click', setHairColor)
+  document.getElementById('setLipColor').addEventListener('click', setLipColor)
+  document.getElementById('setEyeColor').addEventListener('click', setEyeColor)
+  document.getElementById('resetHairColor').addEventListener('click', resetHairColor)
+  document.getElementById('resetLipColor').addEventListener('click', resetLipColor)
+  document.getElementById('resetEyeColor').addEventListener('click', resetEyeColor)
+
+  detectingDisplay = select("#detecting")
+
+  sources = select('#sources')
+  sourcesToggle = select("#toggleSources")
+  sourcesToggle.mouseClicked(() => {
+    if(sources.class() === 'hide') {
+      sources.removeClass('hide')
+    } else {
+      sources.addClass('hide')
+    }
+  })
+}
+
+function setHairColor() {
+  let color = document.getElementById('hairColor').value
+  hairChanged = true;
+  hairColor = hexToRGB(color);
+}
+
+function setLipColor() {
+  let color = document.getElementById('lipColor').value
+  lipChanged = true;
+  lipColor = hexToRGB(color);
+}
+
+function setEyeColor() {
+  let color = document.getElementById('eyeColor').value
+  eyeChanged = true;
+  eyeColor = hexToRGB(color)
+}
+
+function resetHairColor () {
+  hairColor = defaultHairColor;
+  hairChanged = false;
+}
+
+function resetLipColor () {
+  lipColor = defaultLipColor;
+  lipChanged = false;
+}
+
+function resetEyeColor() {
+  eyeColor = defaultEyeColor;
+  eyeChanged = false;
+}
+
+function draw() {
+  background(0);
+
+  score = 0;
+
+  if(hairColor) {
+    if(hairChanged) {
+      score += map((hairColor[0] * hairWeights[0]) + (hairColor[1] * hairWeights[1]) + (hairColor[2] * hairWeights[2]), 0, hairMax, 0, 1) 
+    }
+  
+    if(eyeChanged) {
+      score += map((eyeColor[0] * eyeWeights[0]) + (eyeColor[1] * eyeWeights[1]) + (eyeColor[2] * eyeWeights[2]), 0, eyeMax, 0, 1) 
+    }
+  
+    if(lipChanged) {
+      score += map((lipColor[0] * lipWeights[0]) + (lipColor[1] * lipWeights[1]) + (lipColor[2] * lipWeights[2]), 0, lipMax, 0, 1) 
+    }
+  
+    if(eyeColor[0] === 0 && eyeColor[1] === 0 && eyeColor[2] === 255) {
+      score = 3;
+    }
+  }
+
+  if(score != 0) {
+    detectColor = false;
+  }
+
+  push();
+  tint(255, map(score, 0, 3, 255, 0));
+  image(video, 0, 0, vidW, vidH);
+  tint(255, 255)
+  pop();
+
+  push()
+  noStroke()
+  fill(255)
+  rect(0, 0, 100, 10)
+  colorMode(HSB, 255)
+  fill(map(score, 0, 3, 0, 100), 255, 255)
+  rect(0, 0, map(score, 0, 3, 0, 100), 10)
+  pop()
+
+  detectingDisplay.html(detectColor)
+
+  drawParts()
+}
+
+function drawParts() {
+  if(boxes[0]) {
+    let noseHighestX = 0;
+    let noseLowestX = width;
+    let noseHighestY = 0;
+    let noseLowestY = height;
+
+    for(let vert of parts.nose) {
+      if(vert.y > noseHighestY) {
+        noseHighestY = vert.y
+      } else if(vert.y < noseLowestY) {
+        noseLowestY = vert.y
+      }
+    }
+
+    for(let vert of parts.jawOutline) {
+      if(vert.x > noseHighestX) {
+        noseHighestX = vert.x
+      }
+      if (vert.x < noseLowestX) {
+        noseLowestX = vert.x;
+      }
+    }
+
+    let centerX = noseLowestX + ((noseHighestX - noseLowestX) / 2);
+    let centerY = noseLowestY + ((noseHighestY - noseLowestY) / 2) - (boxes[0].height * 0.25);
+
+    if(detectColor) {
+      skinColor = get(centerX, centerY + (boxes[0].height * 0.1))
+
+      let browHighestX = 0;
+      let browLowestX = width;
+      let browHighestY = 0;
+      let browLowestY = height;
+
+      for(let vert of parts.leftEyeBrow) {
+        if(vert.x > browHighestX) {
+          browHighestX = vert.x
+        }
+        
+        if (vert.x < browLowestX) {
+          browLowestX = vert.x;
+        }
+  
+        if(vert.y > browHighestY) {
+          browHighestY = vert.y
+        } 
+        if(vert.y < browLowestY) {
+          browLowestY = vert.y
+        }
+      }
+
+      if(!hairChanged) {
+        hairColor = get(browLowestX + ((browHighestX - browLowestX) / 2) , browLowestY + ((browHighestY - browLowestY) /2))
+        defaultHairColor = hairColor;
+      }
+      
+
+      let eyeHighestX = 0;
+      let eyeLowestX = width;
+      let eyeHighestY = 0;
+      let eyeLowestY = height;
+
+      for(let vert of parts.rightEye) {
+        if(vert.x > eyeHighestX) {
+          eyeHighestX = vert.x
+        } 
+        
+        if (vert.x < eyeLowestX) {
+          eyeLowestX = vert.x;
+        }
+
+        if(vert.y > eyeHighestY) {
+          eyeHighestY = vert.y
+        }
+        
+        if(vert.y < eyeLowestY) {
+          eyeLowestY = vert.y
+        }
+      }
+
+      if(!eyeChanged) {
+        eyeColor = get(eyeLowestX + ((eyeHighestX - eyeLowestX) / 2) , eyeLowestY + ((eyeHighestY - eyeLowestY) /5));
+        defaultEyeColor = eyeColor;
+      }
+      
+
+      let mouthHighestX = 0;
+      let mouthLowestX = width;
+      let mouthHighestY = 0;
+      let mouthLowestY = height;
+
+      for(let vert of parts.mouth) {
+        if(vert.x > mouthHighestX) {
+          mouthHighestX = vert.x
+        } 
+        
+        if (vert.x < mouthLowestX) {
+          mouthLowestX = vert.x;
+        }
+
+        if(vert.y > mouthHighestY) {
+          mouthHighestY = vert.y
+        }
+        
+        if(vert.y < mouthLowestY) {
+          mouthLowestY = vert.y
+        }
+      }
+
+      if(!lipChanged) {
+        lipColor =  get(mouthLowestX + ((mouthHighestX - mouthLowestX) / 2) , mouthLowestY + ((mouthHighestY - mouthLowestY) *0.01));
+        defaultLipColor = lipColor
+      }
+      
+      mouthColor = get(mouthLowestX + ((mouthHighestX - mouthLowestX) / 2) , mouthLowestY + ((mouthHighestY - mouthLowestY) *0.5))
+    }
+
+    push();
+    fill(skinColor[0], skinColor[1], skinColor[2])
+    stroke(0)
+    strokeWeight(1);
+
+    // ellipse(x, y, 0.8 * boxes[0].width, h) // face bg
+    beginShape();
+    
+    let lowestFaceY = height;
+
+    for(let vert of parts.jawOutline) {
+      curveVertex(vert.x, vert.y);
+
+      if(vert.y < lowestFaceY) {
+        lowestFaceY = vert.y;
+      }
+    }
+
+    if(!faceHeight) {
+      faceHeight = (boxes[0].y - lowestFaceY);
+    }
+
+    curveVertex(centerX + ((centerX - noseLowestX) * 0.5), boxes[0].y + faceHeight)
+    curveVertex(centerX - ((noseHighestX - centerX) * 0.5), boxes[0].y + faceHeight)
+
+    endShape(CLOSE);
+    drawNose(parts.nose)
+
+    pop();
+    
+    drawMouth(parts.mouth)
+
+    drawEye(parts.rightEye);
+    drawEye(parts.leftEye);
+
+    push();
+    fill(hairColor[0], hairColor[1], hairColor[2]);
+    stroke(0);
+    strokeWeight(1);
+    drawPart(parts.rightEyeBrow);
+    drawPart(parts.leftEyeBrow);
+    pop();
+  }
+}
+
+function drawNose(vertexes) {
+  let topVertex = {x: 0, y: height};
+  let rightVertext = {x: width, y: 0};
+
+  for(let vert of vertexes) {
+    if(vert.y < topVertex.y) {
+      topVertex = vert
+    }
+
+    if(vert.x < rightVertext.x) {
+      rightVertext = vert;
+    }
+  } 
+
+  drawPart(vertexes);
+  line(topVertex.x, topVertex.y, rightVertext.x, rightVertext.y)
+}
+
+function drawMouth(vertexes) {
+  push();
+  fill(lipColor[0], lipColor[1], lipColor[2])
+  stroke(0)
+  strokeWeight(1);
+  beginShape();
+  for(let i = 0; i < 12; i++) {
+    let vert = vertexes[i]
+    curveVertex(vert.x, vert.y);
+  }
+  endShape(CLOSE);
+  pop();
+
+  push();
+  fill(mouthColor[0], mouthColor[1], mouthColor[2])
+  stroke(0)
+  strokeWeight(1);
+  beginShape();
+  for(let i = 12; i < vertexes.length; i++) {
+    let vert = vertexes[i]
+    curveVertex(vert.x, vert.y);
+    
+  }
+  endShape(CLOSE)
+  pop();
+}
+
+function drawEye(vertexes) {
+  let eyeHighestX = 0;
+  let eyeLowestX = width;
+  let eyeHighestY = 0;
+  let eyeLowestY = height;
+  for(let vert of vertexes) {
+    if(vert.x > eyeHighestX) {
+      eyeHighestX = vert.x
+    } 
+    
+    if (vert.x < eyeLowestX) {
+      eyeLowestX = vert.x;
+    }
+
+    if(vert.y > eyeHighestY) {
+      eyeHighestY = vert.y
+    }
+    
+    if(vert.y < eyeLowestY) {
+      eyeLowestY = vert.y
+    }
+  }
+
+  let centerY = eyeLowestY + ((eyeHighestY - eyeLowestY) / 2)
+
+  push();
+  stroke(0);
+  strokeWeight(1);
+  beginShape();
+  fill(255)
+  for(let vert of vertexes) {
+    if(vert.y > centerY) {
+      curveVertex(vert.x, vert.y + 2)
+    } else if(vert.y < centerY) {
+      curveVertex(vert.x, vert.y -2)
+    } else {
+      curveVertex(vert.x, vert.y)
+    }
+    
+  }
+  endShape(CLOSE);
+  fill(eyeColor[0], eyeColor[1], eyeColor[2])
+  ellipse(eyeLowestX + ((eyeHighestX - eyeLowestX) / 2) , centerY, (eyeHighestY - eyeLowestY) + 3)//iris
+  fill(0)
+  ellipse(eyeLowestX + ((eyeHighestX - eyeLowestX) / 2) , centerY, ((eyeHighestY - eyeLowestY) + 2) /3)//pupil
+  pop();
+}
+
+function drawPart(vertexes) {
+  beginShape();
+  for(let vert of vertexes) {
+    curveVertex(vert.x, vert.y)
+  }
+  endShape(CLOSE);
+}
+
+function initVideo() {
+  let constraints = {
+    video: {
+      mandatory: {
+        // minWidth: 1280,
+        // minHeight: 720
+      },
+      optional: [{ maxFrameRate: 60 }]
+    },
+    audio: false,
+    willReadFrequently: true
+  };
+  video = createCapture(constraints);
+  vidW = video.width * 3;
+  vidH = video.height * 3;
+  video.size(vidW, vidH)
+  video.hide()
+}
+
+function initFaceClassifier() {
+  let options = {
+    inputs: [imgSize, imgSize, 4],
+    task: 'imageClassification',
+    debug: true,
+  }
+  classifier = ml5.neuralNetwork(options)
+}
+
+function initFaceDetector() {
+  const detectionOptions = {
+    withLandmarks: true,
+    withDescriptors: false
+  };
+
+  faceapi = ml5.faceApi(video, detectionOptions, () => {
+    console.log('Face API Model Loaded!')
+    detectFace()
+  });
+}
+
+function detectFace() {
+  faceapi.detect((err, results) => {
+    if (err) return console.error(err)
+
+    boxes = [];
+    if (results && results.length > 0) {
+      parts = results[0].parts;
+      boxes = getBoxes(results)
+      if (trained) {
+        for (let i=0; i < boxes.length; i++) {
+          const box = boxes[i]
+          classifyFace(box)
+        }
+      }
+    }
+    detectFace()
+  })
+}
+
+function getBoxes(detections) {
+  const boxes = []
+  for(let i = 0; i < detections.length; i++) {
+    const alignedRect = detections[i].alignedRect
+
+    const box = {
+      x: alignedRect._box._x,
+      y: alignedRect._box._y,
+      width: alignedRect._box._width,
+      height: alignedRect._box._height,
+      label: ""
+    }
+    boxes.push(box)
+  }
+
+  return boxes
+}
+
+function classifyFace(box) {
+  const img = get(box.x, box.y, box.width, box.height)
+  img.resize(imgSize, imgSize)
+  let inputImage = { image: img };
+  classifier.classify(inputImage, (error, results) => {
+    if (error) return console.error(error)
+
+    // The results are in an array ordered by confidence.
+    label = results[0].label
+    box.label = label
+  });
+}
+
+function trainModel() {
+  classifier.normalizeData()
+  classifier.train({ epochs: 50 }, () =>  {
+    console.log('training complete')
+    trained = true
+  })
+}
+    </script>
+    <button onClick="detectColor = !detectColor">Toggle Color Detect</button> <span id="detecting">true</span>
+
+    <div>
+      Pick hair color: <input type="color" id="hairColor"> <button id="setHairColor">Set</button> <button id="resetHairColor">Reset</button>
+    </div>
+
+    <div>
+      Pick eye color <input type="color" id="eyeColor"> <button id="setEyeColor">Set</button><button id="resetEyeColor">Reset</button>
+    </div>
+
+    <div>
+      Pick lip color <input type="color" id="lipColor"> <button id="setLipColor">Set</button><button id="resetLipColor">Reset</button>
+    </div>
+
+    <button id="toggleSources">Show Sources</button>
+    <div id="sources" class="hide">
+      Works Cited:
+      <ul>
+        <li>FaceApi. Ml5js, version 0.12.2, Ml5, June 27th 2023. <i>GitHub,</i> <a href="https://github.com/ml5js/ml5-library/tree/main/src/FaceApi" target="_blank">https://github.com/ml5js/ml5-library/tree/main/src/FaceApi</a></li>
+        <li>P5js, P5js, version 1.7.0, Processing Foundation, <i>GitHub</i> <a href="https://github.com/processing/p5.js" target="_blank">https://github.com/processing/p5.js</a></li>
+        <li>css hex to rgb. Yasin, July 22 2021, <i>Grepper</i> <a href="https://www.grepper.com/answers/290449/css+hex+to+rgb?ucard=1" target="_blank">https://www.grepper.com/answers/290449/css+hex+to+rgb?ucard=1</a></li>
+        <li>"p5.js Web Editor | Face Recognition - Final", germanescorbar, <i>P5js</i> <a href="https://editor.p5js.org/germanescobar/sketches/sEc369bfv" target="_blank">https://editor.p5js.org/germanescobar/sketches/sEc369bfv</a></li>        
+        <li>"Reference | P5js.Org. <i>P5js</i>, <a href="https://p5js.org/reference/" target="_blank">https://p5js.org/reference/</a></li>
+      </ul>
+
+      Licenses:
+      <ul>
+        <li>Ml5js: <a href="https://github.com/ml5js/ml5-library/blob/main/LICENSE.md" target="_blank">https://github.com/ml5js/ml5-library/blob/main/LICENSE.md</a></li>
+        <li>P5js: <a href="https://github.com/processing/p5.js/blob/main/license.txt" target="_blank">https://github.com/processing/p5.js/blob/main/license.txt</a></li>
+      </ul>
+      
+    </div>
+  </body>
+</html>
